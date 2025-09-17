@@ -1,0 +1,914 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>NN Architectures — Single-Branch Collapsible (Pan/Zoom/Inertia/Sticky Tooltip/Modal)</title>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<style>
+  :root{ --bg:#fafafa; --box:#fff; --border:#111; --muted:#666; --accent:#0066ff; --glass: rgba(255,255,255,0.98); }
+  body{font-family:Inter,Segoe UI,Helvetica,Arial,sans-serif;margin:18px;background:var(--bg);color:#111}
+  h1{font-size:20px;margin:0 0 8px}
+  .toolbar{display:flex;gap:12px;align-items:center;margin-bottom:10px;flex-wrap:wrap}
+  .tabs{display:flex;gap:6px}
+  .tab{padding:8px 12px;border-radius:8px;background:#eee;cursor:pointer;font-size:13px}
+  .tab.active{background:var(--border);color:#fff}
+  .controls{display:flex;gap:10px;align-items:center}
+  .map-wrap{border:1px solid #e0e0e0;background:#fff;padding:10px;border-radius:8px;overflow:hidden;position:relative}
+  .viewport{width:1800px;height:1200px;position:relative;transform-origin:0 0; touch-action:none; user-select:none}
+  svg.edges{position:absolute;inset:0;pointer-events:none}
+  .node{position:absolute;min-width:160px;max-width:280px;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--box);box-shadow:0 6px 18px rgba(0,0,0,0.06);cursor:pointer;white-space:normal}
+  .node .title{font-weight:700;font-size:13px}
+  .node .sub{font-size:11px;color:var(--muted);margin-top:6px}
+  /* Tooltip (interactive) */
+  .tooltip{position:fixed;display:none;z-index:9999;max-width:520px;background:#111;color:#fff;padding:12px;border-radius:8px;font-size:13px;box-shadow:0 8px 30px rgba(0,0,0,0.35);pointer-events:auto;user-select:text;}
+  .tooltip .titleRow{display:flex;align-items:center;justify-content:space-between;gap:8px}
+  .tooltip .titleRow strong{font-size:15px}
+  .tooltip .refs{margin-top:8px;font-size:12px}
+  .tooltip .refs a{color:#9fe;word-break:break-all}
+  .tooltip .actions{margin-top:10px;display:flex;gap:8px}
+  .tooltip button, .tooltip a.actionLink{background:var(--accent);color:#fff;padding:7px 9px;border-radius:6px;border:0;font-size:13px;text-decoration:none;cursor:pointer}
+  .tooltip button.secondary{background:#444}
+  .tooltip .closeX{background:transparent;border:0;color:#fff;font-size:18px;cursor:pointer}
+  /* Modal (details) */
+  .modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,0.45);display:none;z-index:10000;align-items:flex-start;justify-content:center;padding:24px;overflow:auto}
+  .modal{background:var(--glass);border-radius:10px;padding:18px;max-width:980px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,0.35);color:#111}
+  .modal h2{margin:0 0 8px}
+  .modal .meta{color:var(--muted);font-size:13px;margin-bottom:12px}
+  .modal .refs a{display:block;color:var(--accent);margin-top:6px;word-break:break-all}
+  .modal .actions{margin-top:12px;display:flex;gap:8px}
+  .modal button{padding:8px 10px;border-radius:8px;border:0;cursor:pointer}
+  .closeModal{background:#444;color:#fff}
+  .legend{margin-left:16px;color:var(--muted)}
+  .footer{margin-top:12px;color:var(--muted);font-size:13px}
+  @media(max-width:900px){ .viewport{width:1200px;height:1600px} .node{min-width:140px} .modal{padding:12px} }
+</style>
+</head>
+<body>
+<h1>Neural Network Architectures — Single-Branch Collapsible Map</h1>
+<div class="toolbar">
+  <div class="tabs">
+    <div class="tab active" data-tab="all">All</div>
+    <div class="tab" data-tab="Core">Core</div>
+    <div class="tab" data-tab="Generative & Meta">Generative & Meta</div>
+    <div class="tab" data-tab="Foundations">Foundations</div>
+  </div>
+  <div class="controls">
+    <label><input type="checkbox" id="cb-core" checked> Core</label>
+    <label><input type="checkbox" id="cb-gen" checked> Generative & Meta</label>
+    <label><input type="checkbox" id="cb-found" checked> Foundations</label>
+    <div class="legend">Page refresh → all collapsed. Click a node → only that branch opens. Hover → preview. Drag empty → pan. Wheel → zoom.</div>
+  </div>
+</div>
+
+<div class="map-wrap" id="mapWrap" tabindex="0">
+  <div id="viewport" class="viewport" style="transform: translate(0px,0px) scale(1);">
+    <svg class="edges" id="edges" width="100%" height="100%"></svg>
+  </div>
+</div>
+
+<!-- Tooltip (interactive & sticky) -->
+<div id="tooltip" class="tooltip" role="dialog" aria-hidden="true"></div>
+
+<!-- Modal for full details -->
+<div id="modalBackdrop" class="modal-backdrop" role="dialog" aria-hidden="true">
+  <div class="modal" id="modal">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <div>
+        <h2 id="modalTitle">Title</h2>
+        <div class="meta" id="modalMeta">Family • Short desc</div>
+      </div>
+      <div>
+        <button id="modalClose" class="closeModal">Close</button>
+      </div>
+    </div>
+    <div id="modalBody" style="max-height:60vh;overflow:auto"></div>
+    <div class="actions" style="margin-top:12px">
+      <button id="modalCopy">Copy</button>
+      <button id="modalOpenAll" class="secondary">Open all refs</button>
+    </div>
+  </div>
+</div>
+
+<div class="footer">Use console helpers: <code>expandAll()</code>, <code>collapseAll()</code>, <code>centerOn('resnet')</code></div>
+
+<script>
+/* ==========================
+   Full taxonomy
+   (same nodes as before; canonical refs included where available)
+   ========================== */
+const TREE = {
+  id: "root",
+  title: "Neural Networks",
+  family: "root",
+  desc: "Top-level taxonomy for neural network architectures",
+  refs: [],
+  children: [
+    {
+      id: "foundations",
+      title: "Statistical Foundations",
+      family: "Foundations",
+      desc: "Statistical roots: GLMs and linear models.",
+      refs: [],
+      children: [
+        { id: "GLM", title: "Generalized Linear Models (GLMs)", family: "Foundations", desc: "Linear predictor + link function; logistic/Poisson; single-layer baseline.", refs: ["https://en.wikipedia.org/wiki/Generalized_linear_model"], children: [] }
+      ]
+    },
+    {
+      id: "core",
+      title: "Core Architectures",
+      family: "Core",
+      desc: "Feedforward, CNNs, RNNs, Transformers, GNNs, Autoencoders, Flows, Neural ODEs, Spiking NNs, etc.",
+      refs: [],
+      children: [
+        {
+          id: "ff",
+          title: "Feedforward / MLP",
+          family: "Core",
+          desc: "Fully-connected networks and MLP variants.",
+          refs: ["https://en.wikipedia.org/wiki/Multilayer_perceptron"],
+          children: [
+            { id: "perceptron", title: "Perceptron", family: "Core", desc: "Single-layer linear classifier.", refs: [], children: [] },
+            { id: "mlp", title: "MLP / FFN", family: "Core", desc: "Fully-connected feedforward networks.", refs: [], children: [] },
+            { id: "mlpmixer", title: "MLP-Mixer / gMLP", family: "Core", desc: "Attention-free token-mixing MLPs for vision.", refs: ["https://arxiv.org/abs/2105.01601", "https://arxiv.org/abs/2104.03240"], children: [] }
+          ]
+        },
+        {
+          id: "cnn",
+          title: "Convolutional Neural Networks (CNNs)",
+          family: "Core",
+          desc: "Weight-shared filters that exploit spatial locality (vision).",
+          refs: ["http://yann.lecun.com/exdb/publis/pdf/lecun-98.pdf"],
+          children: [
+            { id: "lenet", title: "LeNet", family: "Core", desc: "Early convnet for digits (LeCun).", refs: ["http://yann.lecun.com/exdb/publis/pdf/lecun-98.pdf"], children: [] },
+            { id: "alexnet", title: "AlexNet", family: "Core", desc: "Deep CNN that popularized ImageNet training.", refs: ["https://papers.nips.cc/paper/4824-imagenet-classification-with-deep-convolutional-neural-networks.pdf"], children: [] },
+            { id: "vgg", title: "VGG", family: "Core", desc: "Deep stacks of small 3x3 convs.", refs: ["https://arxiv.org/abs/1409.1556"], children: [] },
+            { id: "inception", title: "Inception / GoogLeNet", family: "Core", desc: "Multi-branch modules for multi-scale features.", refs: ["https://arxiv.org/abs/1409.4842"], children: [] },
+            { id: "resnet", title: "ResNet (Residual)", family: "Core", desc: "Identity skip connections enabling very deep nets.", refs: ["https://arxiv.org/abs/1512.03385"], children: [] },
+            { id: "densenet", title: "DenseNet", family: "Core", desc: "Dense concatenation of feature maps for reuse.", refs: ["https://arxiv.org/abs/1608.06993"], children: [] },
+            { id: "mobilenet", title: "MobileNet", family: "Core", desc: "Depthwise separable convs for mobile efficiency.", refs: ["https://arxiv.org/abs/1704.04861"], children: [] },
+            { id: "efficientnet", title: "EfficientNet", family: "Core", desc: "Compound scaling for parameter-efficiency.", refs: ["https://arxiv.org/abs/1905.11946"], children: [] },
+            { id: "capsule", title: "Capsule Networks", family: "Core", desc: "Capsules + routing for pose-aware features.", refs: ["https://arxiv.org/abs/1710.09829"], children: [] }
+          ]
+        },
+        {
+          id: "rnn",
+          title: "Recurrent Neural Networks (RNNs)",
+          family: "Core",
+          desc: "Stateful architectures for sequential data/time series.",
+          refs: ["https://en.wikipedia.org/wiki/Recurrent_neural_network"],
+          children: [
+            { id: "vanilla_rnn", title: "Vanilla RNN", family: "Core", desc: "Basic recurrent cell; vanishing/exploding gradients.", refs: [], children: [] },
+            { id: "lstm", title: "LSTM", family: "Core", desc: "Long Short-Term Memory — gated recurrent cell.", refs: ["https://www.bioinf.jku.at/publications/older/2604.pdf"], children: [] },
+            { id: "gru", title: "GRU", family: "Core", desc: "Gated Recurrent Unit, lighter than LSTM.", refs: ["https://arxiv.org/abs/1406.1078"], children: [] },
+            { id: "bidir", title: "Bidirectional RNNs", family: "Core", desc: "Bi-directional context processing.", refs: [], children: [] },
+            { id: "tcn", title: "Temporal ConvNet (TCN)", family: "Core", desc: "Causal dilated convolutions for long-range sequences.", refs: ["https://arxiv.org/abs/1803.01271"], children: [] },
+            { id: "echo", title: "Echo State Networks", family: "Core", desc: "Reservoir computing with fixed recurrent weights.", refs: [], children: [] },
+            { id: "convlstm", title: "ConvLSTM", family: "Core", desc: "Convolutional recurrent cell for spatio-temporal data.", refs: [], children: [] }
+          ]
+        },
+        {
+          id: "transformer",
+          title: "Transformer Family",
+          family: "Core",
+          desc: "Self-attention architectures displacing recurrence for many tasks.",
+          refs: ["https://arxiv.org/abs/1706.03762"],
+          children: [
+            { id: "bert", title: "BERT (Encoder)", family: "Core", desc: "Masked LM encoder pretraining.", refs: ["https://arxiv.org/abs/1810.04805"], children: [] },
+            { id: "gpt", title: "GPT (Decoder/LM)", family: "Core", desc: "Autoregressive decoder stacks.", refs: ["https://cdn.openai.com/research-covers/language-unsupervised/language_understanding_paper.pdf"], children: [] },
+            { id: "t5", title: "T5 (Encoder-Decoder)", family: "Core", desc: "Text-to-text transfer transformer.", refs: ["https://arxiv.org/abs/1910.10683"], children: [] },
+            { id: "vit", title: "Vision Transformer (ViT)", family: "Core", desc: "Transformers applied to image patches.", refs: ["https://arxiv.org/abs/2010.11929"], children: [] },
+            { id: "perceiver", title: "Perceiver", family: "Core", desc: "Cross-attention latent bottleneck for high-dim inputs.", refs: ["https://arxiv.org/abs/2103.03206"], children: [] },
+            { id: "long", title: "Long/Memory Variants", family: "Core", desc: "Longformer, Reformer, Performer, etc.", refs: ["https://arxiv.org/abs/2004.05150"], children: [] },
+            { id: "moe", title: "Mixture of Experts (MoE)", family: "Core", desc: "Sparse routing to expert subnets.", refs: ["https://arxiv.org/abs/2101.03961"], children: [] }
+          ]
+        },
+        {
+          id: "gnn",
+          title: "Graph Neural Networks (GNNs)",
+          family: "Core",
+          desc: "Message passing and graph convolutions for structured data.",
+          refs: ["https://arxiv.org/abs/1609.02907"],
+          children: [
+            { id: "gcn", title: "GCN", family: "Core", desc: "Graph convolutional nets (Kipf & Welling).", refs: ["https://arxiv.org/abs/1609.02907"], children: [] },
+            { id: "gat", title: "GAT", family: "Core", desc: "Graph attention networks.", refs: ["https://arxiv.org/abs/1710.10903"], children: [] },
+            { id: "graphsage", title: "GraphSAGE", family: "Core", desc: "Inductive neighbor sampling for large graphs.", refs: ["https://arxiv.org/abs/1706.02216"], children: [] },
+            { id: "gin", title: "GIN", family: "Core", desc: "Graph Isomorphism Network.", refs: ["https://arxiv.org/abs/1810.00826"], children: [] },
+            { id: "graphtransformer", title: "Graph Transformer", family: "Core", desc: "Transformer + graph inductive biases.", refs: [], children: [] }
+          ]
+        },
+        {
+          id: "auto",
+          title: "Autoencoders",
+          family: "Core",
+          desc: "Encoder-decoder models for representation learning & generation.",
+          refs: [],
+          children: [
+            { id: "denoising", title: "Denoising AE", family: "Core", desc: "Reconstruct clean from noisy inputs.", refs: ["https://www.jmlr.org/papers/volume11/vincent10a/vincent10a.pdf"], children: [] },
+            { id: "sparseae", title: "Sparse AE", family: "Core", desc: "Sparsity-promoting latent codes.", refs: [], children: [] },
+            { id: "vae", title: "VAE", family: "Core", desc: "Variational autoencoder (Kingma & Welling).", refs: ["https://arxiv.org/abs/1312.6114"], children: [] },
+            { id: "vqvae", title: "VQ-VAE", family: "Core", desc: "Vector-quantized latent codes.", refs: ["https://arxiv.org/abs/1711.00937"], children: [] }
+          ]
+        },
+        {
+          id: "resdense",
+          title: "Residual & Dense",
+          family: "Core",
+          desc: "Skip connections & dense topologies.",
+          refs: [],
+          children: [
+            { id: "resnetNode", title: "ResNet", family: "Core", desc: "Residual skip connections.", refs: ["https://arxiv.org/abs/1512.03385"], children: [] },
+            { id: "densenetNode", title: "DenseNet", family: "Core", desc: "Dense concatenation.", refs: ["https://arxiv.org/abs/1608.06993"], children: [] },
+            { id: "highway", title: "Highway Networks", family: "Core", desc: "Gated shortcuts.", refs: [], children: [] }
+          ]
+        },
+        {
+          id: "flows",
+          title: "Normalizing Flows",
+          family: "Core",
+          desc: "Invertible transforms with tractable Jacobians.",
+          refs: ["https://arxiv.org/abs/1410.8516"],
+          children: [
+            { id: "nice", title: "NICE", family: "Core", desc: "Early invertible coupling layers.", refs: ["https://arxiv.org/abs/1410.8516"], children: [] },
+            { id: "realnvp", title: "RealNVP", family: "Core", desc: "Coupling layers.", refs: ["https://arxiv.org/abs/1605.08803"], children: [] },
+            { id: "glow", title: "Glow", family: "Core", desc: "Invertible 1x1 convs + multi-scale flows.", refs: ["https://arxiv.org/abs/1807.03039"], children: [] }
+          ]
+        },
+        {
+          id: "neuralode",
+          title: "Neural ODEs & Continuous Models",
+          family: "Core",
+          desc: "Continuous-depth models where residual blocks are ODE integrators.",
+          refs: ["https://arxiv.org/abs/1806.07366"],
+          children: [
+            { id: "neuralodeNode", title: "Neural ODE", family: "Core", desc: "Continuous-depth networks.", refs: ["https://arxiv.org/abs/1806.07366"], children: [] },
+            { id: "augmented", title: "Augmented Neural ODE", family: "Core", desc: "Latent augmentation for expressivity.", refs: [], children: [] }
+          ]
+        },
+        { id: "spiking", title: "Spiking Neural Networks", family: "Core", desc: "Event-driven biologically-inspired models.", refs: ["https://en.wikipedia.org/wiki/Spiking_neural_network"], children: [] }
+      ]
+    },
+    {
+      id: "genmeta",
+      title: "Generative & Meta Architectures",
+      family: "Generative & Meta",
+      desc: "GANs, Diffusion, EBMs, Hypernets, Memory-aug, Meta-learning, Self-supervised.",
+      refs: [],
+      children: [
+        {
+          id: "gans",
+          title: "GANs",
+          family: "Generative & Meta",
+          desc: "Adversarial generator vs discriminator.",
+          refs: ["https://arxiv.org/abs/1406.2661"],
+          children: [
+            { id: "dcgan", title: "DCGAN", family: "Generative & Meta", desc: "Conv GAN for images.", refs: ["https://arxiv.org/abs/1511.06434"], children: [] },
+            { id: "wgan", title: "WGAN / WGAN-GP", family: "Generative & Meta", desc: "Wasserstein GAN variants.", refs: ["https://arxiv.org/abs/1701.07875", "https://arxiv.org/abs/1704.00028"], children: [] },
+            { id: "stylegan", title: "StyleGAN", family: "Generative & Meta", desc: "Style-based generator.", refs: ["https://arxiv.org/abs/1812.04948", "https://arxiv.org/abs/1912.04958"], children: [] },
+            { id: "cyclegan", title: "CycleGAN", family: "Generative & Meta", desc: "Unpaired image translation.", refs: ["https://arxiv.org/abs/1703.10593"], children: [] },
+            { id: "biggan", title: "BigGAN", family: "Generative & Meta", desc: "Large-scale GAN.", refs: [], children: [] },
+            { id: "conditional", title: "Conditional GAN", family: "Generative & Meta", desc: "Conditioned generation.", refs: [], children: [] }
+          ]
+        },
+        {
+          id: "diffusion",
+          title: "Diffusion Models",
+          family: "Generative & Meta",
+          desc: "DDPM / score-based models for high-quality generation.",
+          refs: ["https://arxiv.org/abs/2006.11239"],
+          children: [
+            { id: "ddpm", title: "DDPM / Score-based", family: "Generative & Meta", desc: "Denoising diffusion probabilistic models.", refs: ["https://arxiv.org/abs/2006.11239"], children: [] },
+            { id: "ldm", title: "Latent Diffusion Models", family: "Generative & Meta", desc: "Diffusion in compressed latent spaces.", refs: ["https://arxiv.org/abs/2112.10752"], children: [] }
+          ]
+        },
+        { id: "ebm", title: "Energy-Based Models (EBM)", family: "Generative & Meta", desc: "Unnormalized density models via energy.", refs: ["https://proceedings.neurips.cc/paper/1992/hash/13e3aa0b2b1c6c1f1ea3ad8ee8b3a8f3-Abstract.html"], children: [] },
+        { id: "flowsGen", title: "Flow-based Generative Models", family: "Generative & Meta", desc: "Normalizing flows as generative models.", refs: ["https://arxiv.org/abs/1410.8516"], children: [] },
+        { id: "hypernetworks", title: "Hypernetworks", family: "Generative & Meta", desc: "Networks that generate other networks' weights.", refs: ["https://arxiv.org/abs/1609.09106"], children: [] },
+        { id: "memory", title: "Memory-Augmented Networks (NTM / DNC)", family: "Generative & Meta", desc: "External memory for algorithmic tasks.", refs: ["https://arxiv.org/abs/1410.5401"], children: [] },
+        { id: "meta", title: "Meta-Learning & Few-Shot", family: "Generative & Meta", desc: "MAML, prototypical networks, metric learning.", refs: ["https://arxiv.org/abs/1703.03400"], children: [] },
+        { id: "selfsupervised", title: "Self-Supervised / Contrastive", family: "Generative & Meta", desc: "SimCLR, MoCo, BYOL, masked modeling.", refs: ["https://arxiv.org/abs/2002.05709"], children: [] },
+        { id: "neurosym", title: "Neuro-Symbolic & Hybrid Systems", family: "Generative & Meta", desc: "Neural + symbolic composition.", refs: [], children: [] },
+        { id: "bayes", title: "Bayesian Neural Networks", family: "Generative & Meta", desc: "Posterior uncertainty over weights.", refs: ["https://arxiv.org/abs/1506.02142"], children: [] }
+      ]
+    }
+  ]
+};
+
+/* ============================================
+   NEW: Default collapse policy + single-branch behavior
+   ============================================
+   - On load: collapse ALL nodes (except root placeholder).
+   - On click of any node: collapse entire tree, then expand only the path from root->clicked node and the clicked node itself.
+   - This ensures only one branch is visible/expanded at any time.
+*/
+
+/* Initialize: collapse everything on refresh */
+const state = {};
+function markAllCollapsed(node){
+  state[node.id] = { collapsed: true }; // collapse everything by default
+  (node.children||[]).forEach(markAllCollapsed);
+}
+markAllCollapsed(TREE); // collapse everybody on load
+// But root must be uncollapsed so the tree can compute leaves positions (it won't be visible)
+state['root'] = { collapsed: false };
+
+/* Helper: find path (array of node ids) from root to target node id */
+function findPathToId(root, targetId){
+  const path = [];
+  let found = false;
+  function dfs(node){
+    if(found) return;
+    path.push(node);
+    if(node.id === targetId){ found = true; return; }
+    (node.children || []).forEach(child => { if(!found) dfs(child); });
+    if(!found) path.pop();
+  }
+  dfs(root);
+  return found ? path : null;
+}
+
+/* Collapse all nodes */
+function collapseAllNodes(){
+  Object.keys(state).forEach(k => state[k].collapsed = true);
+  state['root'] = { collapsed: false }; // keep root non-collapsed as base
+}
+
+/* Expand path: given array of nodes from root..target, un-collapse each node so path is visible
+   Additionally, un-collapse the target (clicked) node so its children show (if any). */
+function expandPath(pathNodes){
+  if(!pathNodes) return;
+  pathNodes.forEach(n => {
+    state[n.id].collapsed = false;
+  });
+  // Also expand the target node's children so they are visible for hover
+  const targetNode = pathNodes[pathNodes.length - 1];
+  if(targetNode && targetNode.children) {
+    targetNode.children.forEach(child => {
+      if(state[child.id]) {
+        state[child.id].collapsed = false;
+      }
+    });
+  }
+}
+
+/* When user clicks node: apply single-branch policy */
+function onNodeSelected(node){
+  // collapse everything, then expand path to node
+  collapseAllNodes();
+  const path = findPathToId(TREE, node.id);
+  if(path){
+    expandPath(path);
+  } else {
+    // fallback: if not found (shouldn't happen), just uncollapse node
+    state[node.id] = { collapsed: false };
+  }
+  // redraw after change
+  draw();
+}
+
+/* ====================================
+   Layout + rendering (tweak: extra spacing between leaf boxes only)
+   ==================================== */
+function collectVisible(root){
+  const out=[];
+  function dfs(node,parent,depth){
+    out.push({node,parent,depth});
+    const collapsed = state[node.id] && state[node.id].collapsed;
+    if(!collapsed){
+      (node.children||[]).forEach(child => dfs(child,node,depth+1));
+    }
+  }
+  dfs(root,null,0);
+  return out;
+}
+
+/* REPLACED: layoutPositions now adds EXTRA_LEAF_GAP between leaf boxes only */
+function layoutPositions(visible, width=1600, levelGap=120){
+  const visibleIds = new Set(visible.map(v=>v.node.id));
+
+  function collectLeaves(n){
+    const collapsed = state[n.id] && state[n.id].collapsed;
+    if(!n.children || n.children.length===0 || collapsed) return [n.id];
+    let leaves=[];
+    n.children.forEach(c=>{ if(visibleIds.has(c.id)) leaves = leaves.concat(collectLeaves(c)); });
+    if(leaves.length===0) leaves.push(n.id);
+    return leaves;
+  }
+
+  const leafOrder = collectLeaves(TREE);
+  console.log('Leaf order:', leafOrder); // Debug log
+  console.log('Visible nodes:', Array.from(visibleIds)); // Debug log
+
+  // CONFIG: extra horizontal gap (px) to insert between adjacent leaf nodes
+  const EXTRA_LEAF_GAP = 64; // <<< INCREASED from 36 to 64 — only change made per your request
+
+  const leftPad = 80, rightPad = 80;
+  const usable = width - leftPad - rightPad;
+
+  const leafCount = Math.max(leafOrder.length, 1);
+  const totalExtra = EXTRA_LEAF_GAP * Math.max(0, leafCount - 1);
+  // keep a fallback minimum per-leaf base spacing to avoid collapse
+  const baseUsable = Math.max(usable - totalExtra, 60 * leafCount);
+  const baseSpacing = baseUsable / leafCount;
+
+  // occupied width is baseSpacing * leafCount + EXTRA_LEAF_GAP*(leafCount-1)
+  const occupiedWidth = baseSpacing * leafCount + EXTRA_LEAF_GAP * Math.max(0, leafCount - 1);
+  const startX = leftPad + Math.max(0, (usable - occupiedWidth) / 2);
+
+  const leafX = {};
+  for(let i=0;i<leafCount;i++){
+    const center = startX + (i * (baseSpacing + EXTRA_LEAF_GAP)) + baseSpacing * 0.5;
+    leafX[leafOrder[i]] = center;
+  }
+
+  const pos = {};
+  function compute(n, depth){
+    const vchildren = (n.children||[]).filter(c => visibleIds.has(c.id));
+    if(vchildren.length === 0 || (state[n.id] && state[n.id].collapsed)){
+      pos[n.id] = { x: leafX[n.id] || (leftPad + usable/2), y: 30 + depth*levelGap };
+    } else {
+      vchildren.forEach(c => compute(c, depth+1));
+      const xs = vchildren.map(c => pos[c.id].x);
+      const avgx = xs.reduce((a,b)=>a+b,0)/xs.length;
+      pos[n.id] = { x: avgx, y: 30 + depth*levelGap };
+    }
+  }
+  compute(TREE, 0);
+
+  const results = {};
+  visible.forEach(v => { 
+    if(pos[v.node.id]) {
+      results[v.node.id] = pos[v.node.id];
+    } else {
+      console.log('No position found for node:', v.node.id, v.node.title); // Debug log
+    }
+  });
+  console.log('Final positions:', results); // Debug log
+  return { positions: results };
+}
+
+/* Rendering and interactions (pan/zoom/inertia/tooltip/modal) kept intact. The click handler now calls onNodeSelected(...) */
+
+const viewport = document.getElementById('viewport');
+const svg = document.getElementById('edges');
+const tooltip = document.getElementById('tooltip');
+const modalBackdrop = document.getElementById('modalBackdrop');
+const modalTitle = document.getElementById('modalTitle');
+const modalMeta = document.getElementById('modalMeta');
+const modalBody = document.getElementById('modalBody');
+const modalClose = document.getElementById('modalClose');
+const modalCopy = document.getElementById('modalCopy');
+const modalOpenAll = document.getElementById('modalOpenAll');
+
+function clearMap(){
+  viewport.querySelectorAll('.node').forEach(e=>e.remove());
+  svg.innerHTML = '';
+}
+
+function draw(){
+  clearMap();
+  const visible = collectVisible(TREE);
+  const { positions } = layoutPositions(visible, 1400, 120);
+  // draw edges
+  function drawEdges(n){
+    const children = (n.children||[]).filter(c => positions[c.id]);
+    children.forEach(c => {
+      const from = positions[n.id], to = positions[c.id];
+      if(from && to){
+        const path = document.createElementNS("http://www.w3.org/2000/svg",'path');
+        const sx = from.x, sy = from.y + 34;
+        const tx = to.x, ty = to.y - 12;
+        const mx = (sx + tx)/2;
+        const d = `M ${sx} ${sy} C ${mx} ${sy} ${mx} ${ty} ${tx} ${ty}`;
+        path.setAttribute('d', d); path.setAttribute('stroke','#d0d0d0'); path.setAttribute('fill','none'); path.setAttribute('stroke-width','1.4');
+        svg.appendChild(path);
+      }
+      drawEdges(c);
+    });
+  }
+  drawEdges(TREE);
+  // create nodes
+  visible.forEach(v => {
+    const n = v.node;
+    if(!positions[n.id]) {
+      console.log('Skipping node without position:', n.id, n.title); // Debug log
+      return;
+    }
+    const p = positions[n.id];
+    console.log('Rendering node:', n.id, n.title, 'at position:', p.x, p.y); // Debug log
+    const el = document.createElement('div');
+    el.className = 'node';
+    el.style.left = (p.x - 110) + 'px';
+    el.style.top = (p.y - 22) + 'px';
+    el.id = 'node-' + n.id;
+    el.dataset.id = n.id;
+    el.dataset.family = n.family || 'Other';
+    const collapsed = state[n.id] && state[n.id].collapsed;
+    const childrenVisible = (n.children && n.children.some(c => positions[c.id]));
+    const caret = childrenVisible ? (collapsed ? '▶ ' : '▼ ') : '';
+    el.innerHTML = `<div class="title">${caret}${escapeHtml(n.title)}</div><div class="sub">${escapeHtml(n.desc).slice(0,140)}${n.desc.length>140?'…':''}</div>`;
+    // hover preview
+    // pointer-based hover + click handlers (robust with transforms)
+    el.addEventListener('pointerenter', (ev) => {
+      console.log('pointerenter on node:', n.title, 'sticky state:', tooltipStickyState.sticky); // Debug log
+      if(tooltipStickyState.sticky) return;
+      console.log('Hovering over node:', n.title); // Debug log
+      // use client coords and anchor element for robust placement under pan/zoom
+      showTooltipForNode(n, ev.clientX, ev.clientY, false, el);
+      // Store position for potential click
+      lastTooltipPosition = { x: ev.clientX, y: ev.clientY, anchorEl: el };
+    });
+    el.addEventListener('pointermove', (ev) => {
+      if(tooltipStickyState.sticky) return;
+      // follow pointer with light repositioning
+      repositionTooltipNear(ev.clientX, ev.clientY);
+      // Update stored position
+      lastTooltipPosition = { x: ev.clientX, y: ev.clientY, anchorEl: el };
+    });
+    el.addEventListener('pointerleave', (ev) => {
+      if(tooltipStickyState.sticky) return;
+      setTimeout(()=>{ 
+        if(!tooltipStickyState.sticky && tooltip.dataset.pointerInside!=='1') {
+          hideTooltip(); 
+        }
+      }, 120);
+    });
+    el.addEventListener('click', (ev) => {
+      console.log('Clicking on node:', n.title); // Debug log
+      ev.stopPropagation();
+      cancelInertia();
+      onNodeSelected(n);
+      
+      // Store position before hiding tooltip
+      let posX, posY;
+      if (lastTooltipPosition.anchorEl === el) {
+        posX = lastTooltipPosition.x;
+        posY = lastTooltipPosition.y;
+        console.log('Using stored position:', posX, posY); // Debug log
+      } else {
+        const rect = el.getBoundingClientRect();
+        posX = rect.left + rect.width / 2;
+        posY = rect.top + rect.height / 2;
+        console.log('Using element center position:', posX, posY); // Debug log
+      }
+      
+      // Hide any existing tooltip first
+      hideTooltip();
+      
+      // Show new sticky tooltip at the stored position
+      showTooltipForNode(n, posX, posY, true, el);
+    });
+    viewport.appendChild(el);
+  });
+}
+
+/* helpers */
+function escapeHtml(s){ return (s||'').toString().replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+/* initial draw: everything collapsed by default, so only root exists logically; draw to render nodes collapsed */
+draw();
+
+/* ======================================
+   Tooltip (sticky) & modal (unchanged)
+   ====================================== */
+
+let tooltipStickyState = { sticky: false, currentNode: null };
+let lastTooltipPosition = { x: 0, y: 0, anchorEl: null };
+
+/* ---------- Replace this in your file ---------- */
+
+/* Robust tooltip placement — non-destructive replacement
+   - anchorEl preferred (uses boundingClientRect) — works with pan/zoom transforms
+   - otherwise uses clientX/clientY
+   - renders tooltip content first then measures & clamps to viewport
+   - improved positioning logic for better placement
+*/
+function positionTooltipNear(clientX, clientY, anchorEl = null){
+  const tt = tooltip;
+  const margin = 12;
+
+  // Use provided coordinates first, then fall back to anchor element
+  let baseX = Number(clientX);
+  let baseY = Number(clientY);
+  
+  console.log('positionTooltipNear called with:', clientX, clientY, 'anchorEl:', !!anchorEl); // Debug log
+  
+  // Only use anchor element if coordinates are not valid
+  if((!isFinite(baseX) || !isFinite(baseY)) && anchorEl && anchorEl.getBoundingClientRect){
+    const r = anchorEl.getBoundingClientRect();
+    baseX = r.left + r.width / 2;
+    baseY = r.top + r.height / 2;
+    console.log('Using anchor element position:', baseX, baseY); // Debug log
+  }
+
+  // safe defaults
+  if(!isFinite(baseX)) baseX = window.innerWidth / 2;
+  if(!isFinite(baseY)) baseY = window.innerHeight / 2;
+  
+  console.log('Final base position:', baseX, baseY); // Debug log
+
+  // render first so measurement is accurate
+  tt.style.display = 'block';
+  tt.style.left = '0px';
+  tt.style.top = '0px';
+
+  const rTT = tt.getBoundingClientRect();
+  const ttW = rTT.width || 320;
+  const ttH = rTT.height || 160;
+  const winW = window.innerWidth;
+  const winH = window.innerHeight;
+
+  // Smart positioning: try to place tooltip near the element without blocking it
+  let left, top;
+  
+  // Try bottom-right first
+  left = baseX + margin;
+  top = baseY + margin;
+  
+  // If tooltip would overflow right edge, try left side
+  if(left + ttW + 8 > winW) {
+    left = baseX - ttW - margin;
+  }
+  
+  // If tooltip would overflow bottom edge, try top side
+  if(top + ttH + 8 > winH) {
+    top = baseY - ttH - margin;
+  }
+  
+  // If still overflowing left edge, center horizontally
+  if(left < 8) {
+    left = Math.max(8, (winW - ttW) / 2);
+  }
+  
+  // If still overflowing top edge, center vertically
+  if(top < 8) {
+    top = Math.max(8, (winH - ttH) / 2);
+  }
+
+  // Final bounds check
+  left = Math.round(Math.max(8, Math.min(left, winW - ttW - 8)));
+  top = Math.round(Math.max(8, Math.min(top, winH - ttH - 8)));
+
+  tt.style.left = left + 'px';
+  tt.style.top = top + 'px';
+}
+
+/* Reposition tooltip during hover (light repositioning) */
+function repositionTooltipNear(clientX, clientY){
+  if(!tooltipStickyState.sticky && tooltip.style.display !== 'none'){
+    positionTooltipNear(clientX, clientY);
+  }
+}
+
+/* showTooltipForNode: sets content, anchors to element when available, supports sticky & hover */
+function showTooltipForNode(n, clientX, clientY, sticky=false, anchorEl=null){
+  console.log('showTooltipForNode called:', n.title, 'sticky:', sticky); // Debug log
+  tooltipStickyState.sticky = !!sticky;
+  tooltipStickyState.currentNode = n;
+
+  let html = `<div class="titleRow"><strong>${escapeHtml(n.title)}</strong><button class="closeX" aria-label="Close">&times;</button></div>`;
+  html += `<div style="margin-top:8px">${escapeHtml(n.desc)}</div>`;
+  if(n.refs && n.refs.length){
+    html += `<div class="refs"><em>References:</em>`;
+    n.refs.forEach(r => { html += `<div style="margin-top:6px"><a href="${r}" target="_blank" rel="noopener noreferrer">${r}</a></div>`; });
+    html += `</div>`;
+  }
+  html += `<div class="actions">`;
+  html += `<button id="tooltipCopy">Copy</button>`;
+  html += `<a class="actionLink" id="tooltipOpenDetails" href="#">Open details</a>`;
+  html += `<button class="secondary" id="tooltipClose">Close</button>`;
+  html += `</div>`;
+
+  tooltip.innerHTML = html;
+  tooltip.setAttribute('aria-hidden','false');
+  
+  // Force display and position
+  tooltip.style.display = 'block';
+  tooltip.style.visibility = 'visible';
+  tooltip.style.opacity = '1';
+
+  // POSITION AFTER content is in DOM. anchorEl is preferred.
+  positionTooltipNear(clientX, clientY, anchorEl);
+
+  tooltip.dataset.pointerInside = '0';
+  tooltip.addEventListener('pointerenter', onTooltipPointerEnter);
+  tooltip.addEventListener('pointerleave', onTooltipPointerLeave);
+
+  const copyBtn = document.getElementById('tooltipCopy');
+  if(copyBtn){
+    copyBtn.onclick = async () => {
+      const textToCopy = `${n.title}\n\n${n.desc}\n\n${(n.refs||[]).join('\n')}`;
+      try { await navigator.clipboard.writeText(textToCopy); copyBtn.textContent='Copied'; setTimeout(()=>copyBtn.textContent='Copy',900); }
+      catch(e){ alert('Copy failed — browser may block clipboard access.'); }
+    };
+  }
+  const openDetails = document.getElementById('tooltipOpenDetails');
+  if(openDetails) openDetails.onclick = (ev) => { ev.preventDefault(); openModalForNode(n); };
+
+  const closeBtn = document.getElementById('tooltipClose');
+  if(closeBtn) closeBtn.onclick = () => { hideTooltip(); };
+
+  const closeX = tooltip.querySelector('.closeX');
+  if(closeX) closeX.onclick = () => { hideTooltip(); };
+}
+
+function onTooltipPointerEnter(){ tooltip.dataset.pointerInside = '1'; }
+function onTooltipPointerLeave(){ 
+  tooltip.dataset.pointerInside = '0'; 
+  if(!tooltipStickyState.sticky){ 
+    setTimeout(()=>{ 
+      if(tooltip.dataset.pointerInside === '0' && !tooltipStickyState.sticky) {
+        hideTooltip(); 
+      }
+    }, 180); 
+  }
+}
+
+function hideTooltip(){ 
+  console.log('hideTooltip called, was sticky:', tooltipStickyState.sticky); // Debug log
+  tooltip.style.display = 'none'; 
+  tooltip.style.visibility = 'hidden';
+  tooltip.style.opacity = '0';
+  tooltip.setAttribute('aria-hidden','true'); 
+  tooltipStickyState = { sticky:false, currentNode:null }; 
+  tooltip.removeEventListener('pointerenter', onTooltipPointerEnter); 
+  tooltip.removeEventListener('pointerleave', onTooltipPointerLeave); 
+}
+
+document.addEventListener('click', (ev) => {
+  const insideTooltip = !!ev.target.closest('#tooltip');
+  const insideNode = !!ev.target.closest('.node');
+  if(!insideTooltip && !insideNode){
+    // Always hide tooltip when clicking outside, regardless of sticky state
+    hideTooltip();
+  }
+});
+
+document.addEventListener('keydown', (ev) => {
+  if(ev.key === 'Escape'){ hideTooltip(); closeModal(); }
+});
+
+/* Modal */
+function openModalForNode(n){
+  modalTitle.textContent = n.title;
+  modalMeta.textContent = `${n.family} • ${n.desc}`;
+  let html = `<div style="line-height:1.4">${escapeHtml(n.desc)}</div>`;
+  if(n.refs && n.refs.length){
+    html += `<div class="refs" style="margin-top:10px"><strong>References</strong>`;
+    n.refs.forEach(r => html += `<a href="${r}" target="_blank" rel="noopener noreferrer">${r}</a>`);
+    html += `</div>`;
+  } else {
+    html += `<div style="margin-top:8px;color:var(--muted)">No canonical refs provided.</div>`;
+  }
+  modalBody.innerHTML = html;
+  modalBackdrop.style.display = 'flex';
+  modalBackdrop.setAttribute('aria-hidden','false');
+  cancelInertia();
+  modalCopy.onclick = async () => {
+    const text = `${n.title}\n\n${n.desc}\n\n${(n.refs||[]).join('\n')}`;
+    try { await navigator.clipboard.writeText(text); modalCopy.textContent = 'Copied'; setTimeout(()=> modalCopy.textContent = 'Copy', 900); } catch(e){ alert('Copy failed — browser may block clipboard.'); }
+  };
+  modalOpenAll.onclick = (ev) => { (n.refs||[]).forEach(url => window.open(url, '_blank', 'noopener')); };
+}
+function closeModal(){ modalBackdrop.style.display = 'none'; modalBackdrop.setAttribute('aria-hidden','true'); }
+modalBackdrop.addEventListener('click', (ev) => { if(ev.target === modalBackdrop) closeModal(); });
+modalClose.addEventListener('click', closeModal);
+
+/* ============================
+   Pan / Zoom / Inertia logic
+   (unchanged implementation from previous version)
+   ============================ */
+const mapWrap = document.getElementById('mapWrap');
+let scale = 1.0, tx = 0, ty = 0, isPanning = false, panStart = {x:0,y:0,tx:0,ty:0};
+const SCALE_MIN = 0.25, SCALE_MAX = 3.8, SCALE_STEP = 1.12;
+const samples = []; const MAX_SAMPLE_AGE = 120; let inertiaAnim = null;
+
+function updateTransform(){ viewport.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`; }
+
+mapWrap.addEventListener('wheel', (ev) => {
+  ev.preventDefault();
+  cancelInertia();
+  const rect = viewport.getBoundingClientRect();
+  const mx = ev.clientX - rect.left;
+  const my = ev.clientY - rect.top;
+  const delta = -ev.deltaY;
+  const zoomFactor = delta > 0 ? SCALE_STEP : 1 / SCALE_STEP;
+  const newScale = Math.min(SCALE_MAX, Math.max(SCALE_MIN, scale * zoomFactor));
+  const ratio = newScale / scale;
+  tx = mx - ratio * (mx - tx);
+  ty = my - ratio * (my - ty);
+  scale = newScale;
+  updateTransform();
+}, { passive: false });
+
+mapWrap.addEventListener('pointerdown', (ev) => {
+  if(ev.target.closest('.node') || ev.target.closest('#tooltip') || ev.target.closest('.modal')) return;
+  cancelInertia();
+  isPanning = true;
+  mapWrap.setPointerCapture(ev.pointerId);
+  panStart = { x: ev.clientX, y: ev.clientY, tx: tx, ty: ty };
+  samples.length = 0;
+  samples.push({ x: ev.clientX, y: ev.clientY, t: performance.now() });
+});
+
+mapWrap.addEventListener('pointermove', (ev) => {
+  if(!isPanning) return;
+  const dx = ev.clientX - panStart.x;
+  const dy = ev.clientY - panStart.y;
+  tx = panStart.tx + dx;
+  ty = panStart.ty + dy;
+  updateTransform();
+  const now = performance.now();
+  samples.push({ x: ev.clientX, y: ev.clientY, t: now });
+  while(samples.length > 1 && (now - samples[0].t) > MAX_SAMPLE_AGE) samples.shift();
+});
+
+mapWrap.addEventListener('pointerup', (ev) => {
+  if(!isPanning) return;
+  isPanning = false;
+  try { mapWrap.releasePointerCapture(ev.pointerId); } catch(e) {}
+  const now = performance.now();
+  if(samples.length >= 2){
+    const first = samples[0], last = samples[samples.length-1];
+    const dt = Math.max(1, last.t - first.t);
+    let vx = (last.x - first.x) / dt;
+    let vy = (last.y - first.y) / dt;
+    const speed = Math.hypot(vx, vy);
+    const MIN_VEL = 0.05;
+    if(speed > MIN_VEL) startInertia(vx, vy);
+  }
+  samples.length = 0;
+});
+
+mapWrap.addEventListener('pointercancel', ()=>{ isPanning=false; samples.length=0; });
+
+function cancelInertia(){ if(inertiaAnim){ cancelAnimationFrame(inertiaAnim); inertiaAnim = null; } }
+
+let lastInertiaTime = null;
+function startInertia(vx, vy){
+  const friction = 0.92;
+  lastInertiaTime = performance.now();
+  function step(now){
+    const dt = now - lastInertiaTime;
+    lastInertiaTime = now;
+    tx += vx * dt;
+    ty += vy * dt;
+    updateTransform();
+    const decay = Math.pow(friction, dt / 16);
+    vx *= decay; vy *= decay;
+    if(Math.hypot(vx, vy) < 0.02){ inertiaAnim = null; return; }
+    inertiaAnim = requestAnimationFrame(step);
+  }
+  inertiaAnim = requestAnimationFrame(step);
+}
+
+mapWrap.addEventListener('dblclick', ()=>{ cancelInertia(); scale = 1; tx = 0; ty = 0; updateTransform(); });
+
+mapWrap.addEventListener('keydown', (ev)=>{ const step = 40; cancelInertia(); if(ev.key==='ArrowLeft'){ tx += step; updateTransform(); } if(ev.key==='ArrowRight'){ tx -= step; updateTransform(); } if(ev.key==='ArrowUp'){ ty += step; updateTransform(); } if(ev.key==='ArrowDown'){ ty -= step; updateTransform(); } });
+
+/* Tabs & filters */
+document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => {
+  document.querySelectorAll('.tab').forEach(x => x.classList.remove('active')); t.classList.add('active');
+  const tab = t.dataset.tab;
+  if(tab === 'all'){ /* show everything but respect single-branch rule (do nothing) */ }
+  else if(tab === 'Core'){ /* user can click nodes to open branch */ }
+  else if(tab === 'Generative & Meta'){ }
+  else if(tab === 'Foundations'){ }
+  // Note: tabs are informational here because clicking a node enforces single-branch policy.
+  draw();
+}));
+
+document.getElementById('cb-core').addEventListener('change', (e) => { const show = e.target.checked; document.querySelectorAll('.node').forEach(nd => { if(nd.dataset.family === 'Core') nd.style.display = show ? 'block' : 'none'; }); });
+document.getElementById('cb-gen').addEventListener('change', (e) => { const show = e.target.checked; document.querySelectorAll('.node').forEach(nd => { if(nd.dataset.family === 'Generative & Meta') nd.style.display = show ? 'block' : 'none'; }); });
+document.getElementById('cb-found').addEventListener('change', (e) => { const show = e.target.checked; document.querySelectorAll('.node').forEach(nd => { if(nd.dataset.family === 'Foundations') nd.style.display = show ? 'block' : 'none'; }); });
+
+/* Utilities */
+window.expandAll = function(){ Object.keys(state).forEach(k=> state[k].collapsed = false); draw(); }
+window.collapseAll = function(){ Object.keys(state).forEach(k=> state[k].collapsed = true); state['root'].collapsed = false; draw(); }
+window.cancelInertia = cancelInertia;
+window.setZoom = function(s){ scale = Math.min(SCALE_MAX, Math.max(SCALE_MIN, s)); updateTransform(); }
+
+/* Center on node helper (select & center) */
+window.centerOn = function(nodeId){
+  const nodeEl = document.getElementById('node-'+nodeId);
+  if(!nodeEl) { console.warn('node not found:', nodeId); return; }
+  // emulate user selection: collapse all & expand path
+  const path = findPathToId(TREE, nodeId);
+  if(path){ collapseAllNodes(); expandPath(path); draw(); }
+  // position viewport so node is centered in mapWrap
+  const wrapRect = mapWrap.getBoundingClientRect();
+  const nodeRect = nodeEl.getBoundingClientRect();
+  // compute node center in page coords and compute desired tx/ty
+  const centerX = nodeRect.left + nodeRect.width/2;
+  const centerY = nodeRect.top + nodeRect.height/2;
+  // adjust tx,ty so center appears at middle of mapWrap
+  const mapCenterX = wrapRect.left + wrapRect.width/2;
+  const mapCenterY = wrapRect.top + wrapRect.height/2;
+  tx += (mapCenterX - centerX);
+  ty += (mapCenterY - centerY);
+  updateTransform();
+};
+
+window.addEventListener('resize', ()=> draw());
+</script>
+</body>
+</html>
